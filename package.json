@@ -2,14 +2,11 @@
   "name": "hyperliquid-indexer",
   "version": "1.0.0",
   "description": "Hyperliquid S3 Block Indexer",
-  "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "ts-node src/index.ts",
-    "index": "npm start",
-    "example": "ts-node src/example.ts",
-    "framework": "ts-node src/hyperliquid-lake-framework.ts",
-    "user-activity": "ts-node src/user-activity-example.ts"
+    "start": "npm run userActivityExample",
+    "logExample": "ts-node src/examples/logBlock.ts",
+    "userActivityExample": "ts-node src/examples/user-activity-example.ts"
   },
   "keywords": [
     "hyperliquid",

@@ -1,11 +1,11 @@
-import { startStream, types } from './hyperliquid-lake-framework';
+import { startStream, types } from '../lib/hyperliquid-lake-framework';
 import * as hl from "@nktkas/hyperliquid"; // ESM & Common.js
 
 const lakeConfig: types.LakeConfig = {
   network: 'mainnet',
   startBlockHeight: 1000822,
   follow: true,
-  outputDir: './data'
+  //outputDir: './data'
 };
 
 async function handleStreamerMessage(message: types.StreamerMessage): Promise<void> {
