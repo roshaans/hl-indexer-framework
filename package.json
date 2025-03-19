@@ -6,7 +6,10 @@
   "scripts": {
     "build": "tsc",
     "start": "ts-node src/index.ts",
-    "index": "npm start"
+    "index": "npm start",
+    "example": "ts-node src/example.ts",
+    "framework": "ts-node src/hyperliquid-lake-framework.ts",
+    "user-activity": "ts-node src/user-activity-example.ts"
   },
   "keywords": [
     "hyperliquid",
@@ -16,6 +19,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@nktkas/hyperliquid": "^0.16.0",
     "@types/node": "^18.11.18",
     "aws-sdk": "^2.1295.0",
     "lz4": "^0.6.5",

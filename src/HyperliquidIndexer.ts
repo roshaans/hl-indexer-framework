@@ -24,6 +24,8 @@ export interface IndexerConfig {
   endBlock: number;
   outputDir: string;
   downloadOnly?: boolean;
+  follow?: boolean;
+  pollInterval?: number; // in milliseconds
 }
 
 export class HyperliquidIndexer {
@@ -165,7 +167,7 @@ export class HyperliquidIndexer {
     };
   }
 
-  private processBlock(blockData: any): any {
+  private parseBlockData(blockData: any): any {
     if (!blockData || !blockData.block) throw new Error('Invalid block format');
 
     const rethBlock = blockData.block.Reth115;
@@ -193,10 +195,10 @@ export class HyperliquidIndexer {
       const unpacked = unpack(data);
       if (Array.isArray(unpacked)) {
         for (const blockData of unpacked) {
-          this.blocks.push(this.processBlock(blockData));
+          this.blocks.push(this.parseBlockData(blockData));
         }
       } else {
-        this.blocks.push(this.processBlock(unpacked));
+        this.blocks.push(this.parseBlockData(unpacked));
       }
     } catch (error) {
       console.error('Error unpacking MessagePack data:', error);
@@ -216,57 +218,126 @@ export class HyperliquidIndexer {
     }
   }
 
-  public async run(): Promise<void> {
-    const failedBlocks: number[] = [];
-
-    for (let height = this.config.startBlock; height <= this.config.endBlock; height++) {
-      console.log(`Processing block ${height}...`);
-      try {
-        if (!(await this.blockExists(height))) {
-          console.warn(`Skipping block ${height}: Does not exist in S3`);
-          failedBlocks.push(height);
-          continue;
-        }
-
-        console.log(`Downloading block ${height}...`);
-        const compressedData = await this.downloadBlock(height);
-        const outputLz4Path = path.join(this.config.outputDir, `${height}.lz4`);
-        fs.writeFileSync(outputLz4Path, compressedData);
-        console.log(`Saved compressed block to ${outputLz4Path}`);
-
-        let decompressedData;
-        try {
-          console.log(`Decompressing block ${height}...`);
-          decompressedData = await this.decompressLz4(compressedData);
-          const outputMsgpackPath = path.join(this.config.outputDir, `${height}.msgpack`);
-          fs.writeFileSync(outputMsgpackPath, decompressedData);
-          console.log(`Saved decompressed block to ${outputMsgpackPath}`);
-
-          if (!this.config.downloadOnly) {
-            console.log(`Processing block ${height} data...`);
-            const previousLength = this.blocks.length;
-            this.processMsgpackData(decompressedData);
-            
-            // Get the newly added blocks
-            const newBlocks = this.blocks.slice(previousLength);
-            for (const block of newBlocks) {
-              console.log(`Block ${height} has ${block.transactions?.length || 0} transactions`);
-              this.saveBlockToJson(height, block);
-            }
-          }
-        } catch (decompressError) {
-          console.error(`Failed to decompress block ${height}:`, decompressError);
-          continue;
-        }
-      } catch (error) {
-        console.error(`Error processing block ${height}:`, error);
-        failedBlocks.push(height);
-        continue;
+  private async findLatestBlock(): Promise<number> {
+    console.log("Finding latest block...");
+    
+    // Start with a high block number and search backwards
+    let high = 10_000_000; // Arbitrary high number
+    let low = 0;
+    
+    // Binary search to find the latest block
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      console.log(`Checking if block ${mid} exists...`);
+      
+      if (await this.blockExists(mid)) {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
       }
     }
+    
+    // high is now the latest existing block
+    console.log(`Latest block found: ${high}`);
+    return high;
+  }
+  
+  private async processBlockByHeight(height: number, failedBlocks: number[]): Promise<boolean> {
+    try {
+      if (!(await this.blockExists(height))) {
+        console.warn(`Skipping block ${height}: Does not exist in S3`);
+        failedBlocks.push(height);
+        return false;
+      }
 
-    if (failedBlocks.length > 0) {
-      console.warn(`Failed to process ${failedBlocks.length} blocks: ${failedBlocks.join(', ')}`);
+      console.log(`Downloading block ${height}...`);
+      const compressedData = await this.downloadBlock(height);
+      const outputLz4Path = path.join(this.config.outputDir, `${height}.lz4`);
+      fs.writeFileSync(outputLz4Path, compressedData);
+      console.log(`Saved compressed block to ${outputLz4Path}`);
+
+      let decompressedData;
+      try {
+        console.log(`Decompressing block ${height}...`);
+        decompressedData = await this.decompressLz4(compressedData);
+        const outputMsgpackPath = path.join(this.config.outputDir, `${height}.msgpack`);
+        fs.writeFileSync(outputMsgpackPath, decompressedData);
+        console.log(`Saved decompressed block to ${outputMsgpackPath}`);
+
+        if (!this.config.downloadOnly) {
+          console.log(`Processing block ${height} data...`);
+          const previousLength = this.blocks.length;
+          this.processMsgpackData(decompressedData);
+          
+          // Get the newly added blocks
+          const newBlocks = this.blocks.slice(previousLength);
+          for (const block of newBlocks) {
+            console.log(`Block ${height} has ${block.transactions?.length || 0} transactions`);
+            this.saveBlockToJson(height, block);
+          }
+        }
+        return true;
+      } catch (decompressError) {
+        console.error(`Failed to decompress block ${height}:`, decompressError);
+        return false;
+      }
+    } catch (error) {
+      console.error(`Error processing block ${height}:`, error);
+      failedBlocks.push(height);
+      return false;
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  public async run(): Promise<void> {
+    const failedBlocks: number[] = [];
+    
+    if (this.config.follow) {
+      console.log("Running in follow mode - will continuously poll for new blocks");
+      
+      // Find the latest block if endBlock is not specified
+      if (this.config.endBlock <= 0) {
+        this.config.endBlock = await this.findLatestBlock();
+      }
+      
+      let currentBlock = this.config.startBlock;
+      
+      while (true) {
+        // Process blocks up to the current endBlock
+        while (currentBlock <= this.config.endBlock) {
+          console.log(`Processing block ${currentBlock}...`);
+          await this.processBlockByHeight(currentBlock, failedBlocks);
+          currentBlock++;
+        }
+        
+        // Check for new blocks
+        console.log("Checking for new blocks...");
+        const latestBlock = await this.findLatestBlock();
+        
+        if (latestBlock > this.config.endBlock) {
+          console.log(`Found new blocks: ${this.config.endBlock + 1} to ${latestBlock}`);
+          this.config.endBlock = latestBlock;
+        } else {
+          console.log(`No new blocks found. Latest is still ${latestBlock}`);
+          // Wait before polling again
+          const pollInterval = this.config.pollInterval || 60000; // Default to 1 minute
+          console.log(`Waiting ${pollInterval/1000} seconds before checking again...`);
+          await this.sleep(pollInterval);
+        }
+      }
+    } else {
+      // Standard mode - process a fixed range of blocks
+      for (let height = this.config.startBlock; height <= this.config.endBlock; height++) {
+        console.log(`Processing block ${height}...`);
+        await this.processBlockByHeight(height, failedBlocks);
+      }
+      
+      if (failedBlocks.length > 0) {
+        console.warn(`Failed to process ${failedBlocks.length} blocks: ${failedBlocks.join(', ')}`);
+      }
     }
   }
 }
